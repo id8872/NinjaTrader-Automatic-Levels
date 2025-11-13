@@ -1,0 +1,11 @@
+<Levels>
+    <Level type="target" value="26100" color="DarkOrange" style="Dash" thickness="3" label="Upside Target - Strong Resistance"/>
+
+    <Level type="alert" value="26013.50" color="Yellow" style="Dot" thickness="3" label="Recent Day High - Liquidity Pool"/>
+
+    <Level type="major_resistance" value="25300" color="Red" style="Solid" thickness="3" label="Major Resistance - Breakout Zone"/>
+
+    <Level type="major_support" value="25000" color="Green" style="Solid" thickness="3" label="Major Psychological Support"/>
+
+    <Level type="support" value="24588" color="LimeGreen" style="Solid" thickness="3" label="50-Day Moving Average"/>
+</Levels>
