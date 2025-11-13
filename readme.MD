@@ -29,7 +29,7 @@
 
 ## XML File Format
 
-Create a file (e.g., `PriceLevels.xml`) with the following structure:
+Create a file (e.g., `NQ_PriceLevels.xml`) with the following structure:
 
 ```xml
 <Levels>
@@ -61,7 +61,7 @@ Create a file (e.g., `PriceLevels.xml`) with the following structure:
 
 Right-click chart → **Indicators** → Select **"XML\_PriceMarker"** → **Configure**:
 
-  * **XML File Path:** Full path to your XML file (default: `d:\futures_xml\PriceLevels.xml`)
+  * **XML File Path:** Full path to your XML file (default: `d:\futures_xml\NQ_PriceLevels.xml`)
   * **Text Offset (Ticks):** Distance above/below line for labels (0-100)
   * **Show Labels:** Toggle labels on/off
   * **Font Size:** Label font size (6-24pt)
