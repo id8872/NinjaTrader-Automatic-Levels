@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PriceLevels>
+    <!-- MAJOR SUPPORT LEVELS -->
+    <Level type="major_support" value="25000" color="Green" style="Solid" label="Major Psychological Support" thickness="2"/>
+    <Level type="secondary_support" value="24800" color="Lime" style="Dash" label="Secondary Support - Early Pullback Target" thickness="1.5"/>
+    <Level type="support" value="24588" color="LimeGreen" style="Dot" label="50-Day Moving Average" thickness="1"/>
+    
+    <!-- CURRENT PRICE ZONE -->
+    <Level type="current_price" value="26295" color="White" style="Solid" label="Current Price (Nov 13 6:30 AM EST)" thickness="2"/>
+    
+    <!-- RESISTANCE LEVELS -->
+    <Level type="major_resistance" value="25300" color="Red" style="Solid" label="Major Resistance - Breakout Zone" thickness="2"/>
+    <Level type="target" value="25500" color="Orange" style="Dot" label="Upside Target 1 - First Breakout Target" thickness="1.5"/>
+    <Level type="target" value="25800" color="Orange" style="Dash" label="Upside Target 2 - Extended Breakout" thickness="1"/>
+    <Level type="target" value="26100" color="DarkOrange" style="Dash" label="Upside Target 3 - Strong Resistance" thickness="1"/>
+    
+    <!-- LONG-TERM SUPPORT -->
+    <Level type="support" value="22455" color="DarkGreen" style="Solid" label="200-Day Moving Average (Long-term Floor)" thickness="1.5"/>
+    
+    <!-- MARKET CONTEXT LEVELS -->
+    <Level type="alert" value="25700" color="Yellow" style="Dash" label="Recent Day Low - Support Test" thickness="1"/>
+    <Level type="alert" value="26013.50" color="Yellow" style="Dash" label="Recent Day High - Resistance Test" thickness="1"/>
+    
+    <!-- VOLATILITY MARKERS -->
+    <MarketContext>
+        <ATR_14Day value="379.36" unit="points" percentage="1.46"/>
+        <ATR_9Day value="386.12" unit="points" percentage="1.49"/>
+        <RSI_14 value="73.1" signal="Overbought" action="Caution"/>
+        <MACD signal="Bullish" strength="Moderate"/>
+        <HistoricVolatility value="21.56%" level="Elevated"/>
+        <DailyRange value="313.50" unit="points"/>
+        <YearToDateGain value="18.67%" trend="Strong Uptrend"/>
+    </MarketContext>
+    
+    <!-- TRADING ZONES -->
+    <TradingZones>
+        <BullishZone low="25500" high="26100" description="Strong buying zone - continuation pattern"/>
+        <CautionZone low="25300" high="25500" description="Resistance zone - requires breakout confirmation"/>
+        <SupportZone low="25000" high="25300" description="Institutional support - major reversal risk"/>
+        <CriticalZone low="24588" low_extended="24800" description="If broken, significant pullback expected"/>
+    </TradingZones>
+</PriceLevels>
