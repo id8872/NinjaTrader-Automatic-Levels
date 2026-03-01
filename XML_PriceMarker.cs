@@ -1,5 +1,5 @@
 #region Using declarations
-// System namespaces for basic functionality
+// Core C# and data management namespaces
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -7,404 +7,393 @@ using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Xml;
 
-// Windows namespaces for UI elements
-using System.Windows;           // Required for TextAlignment enum
-using System.Windows.Media;     // Required for Brushes and colors
+// Windows Presentation Foundation (WPF) namespaces used for standard UI colors
+using System.Windows;            
+using System.Windows.Media;      
 
-// NinjaTrader namespaces for trading platform integration
-using NinjaTrader.Gui;          // Required for DashStyleHelper enum
+// NinjaTrader specific namespaces for charting, drawing, and core logic
+using NinjaTrader.Gui;           
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
-using NinjaTrader.NinjaScript.DrawingTools;  // Required for drawing methods
+using NinjaTrader.NinjaScript.DrawingTools;  
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
-    /// XML_PriceMarker - Loads price levels from an XML file and draws them on the chart.
-    /// Supports custom colors, line styles, thickness, and intelligent text positioning.
+    /// XML_PriceMarker
+    /// Reads a custom XML file containing price levels and draws them on the chart.
+    /// Features:
+    /// - Infinite Extended Lines (bypasses default Y-Axis price markers).
+    /// - Screen-locked text labels using Direct2D (text stays pinned to the left of the screen, immune to scrolling).
+    /// - Supports standard color names and custom Hex codes.
     /// </summary>
     public class XML_PriceMarker : Indicator
     {
         //=====================================================================
-        // PRIVATE FIELDS
+        // PRIVATE FIELDS & DATA STRUCTURES
         //=====================================================================
-        /// <summary>List to hold all price levels loaded from XML</summary>
+        
+        /// <summary>Master list holding all valid price levels parsed from the XML.</summary>
         private List<LevelData> priceLevels = new List<LevelData>();
-
-        /// <summary>Maps color names to actual Brush objects for quick lookup</summary>
+        
+        /// <summary>Dictionary for fast lookup of standard WPF color names to Brush objects.</summary>
         private Dictionary<string, Brush> brushMap;
+        
+        /// <summary>Internal variable storing the file path, updated via the UI property.</summary>
+        private string xmlFilePath = @"d:\futures_xml\PriceLevels.xml";
 
-        /// <summary>Path to the XML file containing price levels</summary>
-        private string xmlFilePath = @"d:\futures_xml\Examples.xml";
-
-        //=====================================================================
-        // NESTED CLASS: LevelData
-        //=====================================================================
         /// <summary>
-        /// Represents a single price level from the XML file.
-        /// Stores all properties needed to draw the line and label.
+        /// Data structure representing a single XML node.
+        /// Stores all formatting and positioning data needed for rendering.
         /// </summary>
         public class LevelData
         {
-            public string Type;      // Level type (support, resistance, etc.)
-            public double Value;     // Price value of the level
-            public string Color;     // Color name from XML
-            public string Style;     // Line style (Solid, Dash, Dot, etc.)
-            public string Label;     // Text label to display
-            public double Thickness; // Line thickness in pixels
+            public string Type;             // Categorization (e.g., support, resistance)
+            public double Value;            // The exact Y-axis price
+            public Brush LineBrush;         // Pre-compiled WPF Brush for optimal rendering performance
+            public string Style;            // Line styling (Solid, Dash, Dot, etc.)
+            public string Label;            // The text to display on the screen
+            public double Thickness;        // Line thickness in pixels
         }
 
         //=====================================================================
-        // STATE MANAGEMENT
+        // LIFECYCLE MANAGEMENT
         //=====================================================================
+        
         /// <summary>
-        /// Called when indicator state changes. Sets up defaults, loads data, and initializes resources.
+        /// Handles the setup, configuration, and data-loading phases of the indicator.
         /// </summary>
         protected override void OnStateChange()
         {
-            //---------------------------------------------------------
-            // SetDefaults: Configure indicator identity and defaults
-            //---------------------------------------------------------
             if (State == State.SetDefaults)
             {
-                Description = @"Plots price levels from XML file with full style support.";
-                Name = "XML_PriceMarker";
-                Calculate = Calculate.OnBarClose;  // Only calculate on bar close for performance
-                IsOverlay = true;                  // Draw on price panel, not separate panel
-                DisplayInDataBox = true;
-                DrawOnPricePanel = true;
-                PaintPriceMarkers = true;
-                ScaleJustification = ScaleJustification.Right;
-                IsSuspendedWhileInactive = true;
-
-                // FIX: Prevent indicator from affecting chart auto-scale
-                // This ensures the "F" (Fit) button ignores these lines
-                IsAutoScale = false;
-
-                // Default user-configurable properties
-                XmlFilePath = @"d:\futures_xml\PriceLevels.xml";
-                TextOffsetTicks = 20;
-                ShowLabels = true;
-                FontSize = 10;
+                // Basic indicator identity and behavior
+                Description                 = @"Plots price levels from XML file with screen-locked text.";
+                Name                        = "XML_PriceMarker";
+                Calculate                   = Calculate.OnBarClose;  // Calculate on close saves CPU overhead
+                IsOverlay                   = true;                  // Draw directly over the price candles
+                DisplayInDataBox            = true;
+                DrawOnPricePanel            = true;
+                
+                // CRITICAL UI OVERRIDES
+                PaintPriceMarkers           = false;                 // Hides the automatic Y-axis highlighted price tag
+                ScaleJustification          = ScaleJustification.Right;
+                IsSuspendedWhileInactive    = true;
+                IsAutoScale                 = false;                 // Prevents the "F" (Fit) button from zooming out to include these lines
+                
+                // Default User UI Settings
+                XmlFilePath                 = @"d:\futures_xml\PriceLevels.xml";
+                ShowLabels                  = true;
+                FontSize                    = 10;
             }
-
-            //---------------------------------------------------------
-            // Configure: Apply user settings before data load
-            //---------------------------------------------------------
             else if (State == State.Configure)
             {
-                xmlFilePath = XmlFilePath;  // Sync private field with property
+                // Sync the user-defined UI property with the internal field before loading
+                xmlFilePath = XmlFilePath;  
             }
-
-            //---------------------------------------------------------
-            // DataLoaded: Initialize resources after data is loaded
-            //---------------------------------------------------------
             else if (State == State.DataLoaded)
             {
-                // Initialize color mapping dictionary (case-insensitive)
+                // Initialize the color dictionary. StringComparer.OrdinalIgnoreCase allows users 
+                // to type "red", "Red", or "RED" in the XML without breaking the parser.
                 brushMap = new Dictionary<string, Brush>(StringComparer.OrdinalIgnoreCase)
                 {
-                    {"Red", Brushes.Red},
-                    {"Lime", Brushes.Lime},
-                    {"LimeGreen", Brushes.LimeGreen},
-                    {"Orange", Brushes.Orange},
-                    {"DarkOrange", Brushes.DarkOrange},
-                    {"Blue", Brushes.Blue},
-                    {"Gold", Brushes.Gold},
-                    {"Green", Brushes.Green},
-                    {"DarkGreen", Brushes.DarkGreen},
-                    {"White", Brushes.White},
-                    {"Yellow", Brushes.Yellow},
-                    {"Cyan", Brushes.Cyan},
-                    {"Magenta", Brushes.Magenta},
-                    {"Purple", Brushes.Purple},
-                    {"Gray", Brushes.Gray},
+                    {"Red", Brushes.Red}, {"Lime", Brushes.Lime}, {"LimeGreen", Brushes.LimeGreen},
+                    {"Orange", Brushes.Orange}, {"DarkOrange", Brushes.DarkOrange}, {"Blue", Brushes.Blue},
+                    {"Gold", Brushes.Gold}, {"Green", Brushes.Green}, {"DarkGreen", Brushes.DarkGreen},
+                    {"White", Brushes.White}, {"Yellow", Brushes.Yellow}, {"Cyan", Brushes.Cyan},
+                    {"Magenta", Brushes.Magenta}, {"Purple", Brushes.Purple}, {"Gray", Brushes.Gray},
                     {"Silver", Brushes.Silver}
                 };
-
-                // Load and parse the XML file
+                
+                // Trigger the XML parsing routine
                 LoadPriceLevels();
             }
         }
 
         //=====================================================================
-        // XML LOADING
+        // XML PARSER
         //=====================================================================
+        
         /// <summary>
-        /// Loads price levels from the XML file specified in xmlFilePath.
-        /// Parses each Level node and populates the priceLevels list.
+        /// Reads the external XML file, extracts attributes, and populates the priceLevels list.
         /// </summary>
         private void LoadPriceLevels()
         {
-            priceLevels.Clear();  // Clear existing levels before reloading
-
+            priceLevels.Clear();  // Always clear the list before loading to prevent duplicates
+            
             try
             {
                 if (File.Exists(xmlFilePath))
                 {
                     XmlDocument xmlDoc = new XmlDocument();
                     xmlDoc.Load(xmlFilePath);
-
-                    // Select all Level nodes anywhere in the document
+                    
+                    // Iterate through every <Level> node in the document
                     foreach (XmlNode node in xmlDoc.SelectNodes("//Level"))
                     {
                         LevelData lvl = new LevelData();
-
-                        // Parse type attribute (default: "general")
+                        
+                        // Parse attributes with safe fallbacks (?? operator) if the attribute is missing
                         lvl.Type = node.Attributes["type"]?.Value ?? "general";
-
-                        // Parse value attribute (price level) - skip if invalid
+                        
+                        // Price Value is mandatory. If it fails to parse as a double, skip this entire level.
                         if (double.TryParse(node.Attributes["value"]?.Value, out double val))
                             lvl.Value = val;
                         else
-                            continue;  // Skip levels with invalid price values
+                            continue;  
+                        
+                        // Process the color string into a usable Brush object immediately
+                        string colorAttribute = node.Attributes["color"]?.Value ?? "Green";
+                        lvl.LineBrush = GetBrushFromString(colorAttribute);
 
-                        // Parse optional attributes with defaults
-                        lvl.Color = node.Attributes["color"]?.Value ?? "Green";
+                        // Parse string attributes
                         lvl.Style = node.Attributes["style"]?.Value ?? "Solid";
                         lvl.Label = node.Attributes["label"]?.Value ?? "Level";
-
-                        // Parse thickness with fallback to 1
+                        
+                        // Parse thickness, default to 1 pixel if missing or invalid
                         if (double.TryParse(node.Attributes["thickness"]?.Value, out double thickness))
                             lvl.Thickness = thickness;
                         else
                             lvl.Thickness = 1;
-
+                        
                         priceLevels.Add(lvl);
                     }
-
-                    Print($"Loaded {priceLevels.Count} price levels from: {xmlFilePath}");
+                    Print($"XML_PriceMarker: Successfully loaded {priceLevels.Count} price levels from: {xmlFilePath}");
                 }
                 else
                 {
-                    Print($"XML file not found: {xmlFilePath}");
+                    Print($"XML_PriceMarker Error: XML file not found at path: {xmlFilePath}");
                 }
             }
             catch (Exception ex)
             {
-                Print("Error loading XML Levels: " + ex.Message);
+                // Catch any malformed XML errors (like unescaped ampersands) and log them to the Output window
+                Print("XML_PriceMarker Error parsing XML: " + ex.Message);
             }
         }
 
         //=====================================================================
-        // MAIN DRAWING LOGIC
+        // MAIN DRAWING LOGIC (LINES ONLY)
         //=====================================================================
+        
         /// <summary>
-        /// Called on each bar update. Draws all price level lines and labels.
+        /// Standard NinjaTrader drawing method. Used here ONLY to draw the horizontal lines.
+        /// Text is handled separately in OnRender.
         /// </summary>
         protected override void OnBarUpdate()
         {
-            // Skip if no levels to draw
-            if (priceLevels.Count == 0)
+            // Safety check: ExtendedLines require at least 1 historical bar to calculate trajectory
+            if (CurrentBar < 1 || priceLevels.Count == 0)
                 return;
 
-            // Draw each price level
             foreach (var lvl in priceLevels)
             {
-                // Get the brush color for this level (default to Green if not found)
-                brushMap.TryGetValue(lvl.Color, out Brush lineColor);
-                lineColor = lineColor ?? Brushes.Green;
-
-                // Convert style string to DashStyleHelper enum
                 DashStyleHelper dashStyle = GetDashStyle(lvl.Style);
-
-                // Create a unique tag for this drawing object
                 string uniqueTag = lvl.Label + "_" + lvl.Value;
-
-                // Draw the horizontal line
-                // FIX: isAutoScale = false (7th parameter) prevents "F" button from zooming to this line
-                HorizontalLine hLine = Draw.HorizontalLine(this, uniqueTag, lvl.Value, lineColor, dashStyle, (int)lvl.Thickness, false);
-
-                // EXTRA SAFETY: Explicitly disable auto-scale on the drawing object
+                
+                // Use ExtendedLine instead of HorizontalLine. 
+                // Why? ExtendedLines bypass NinjaTrader's forced Y-Axis price marker behavior.
+                // The '1' and '0' represent barsAgo anchors to establish the horizontal trajectory.
+                ExtendedLine hLine = Draw.ExtendedLine(this, uniqueTag, false, 1, lvl.Value, 0, lvl.Value, lvl.LineBrush, dashStyle, (int)lvl.Thickness);
+                
+                // Explicitly tell the drawing object not to ruin the user's chart scaling
                 hLine.IsAutoScale = false;
-
-                // Calculate text offset based on level type
-                double yOffset = CalculateTextOffset(lvl);
-
-                // Draw text label if enabled
-                if (ShowLabels)
-                {
-                    Text textLabel = Draw.Text(this, uniqueTag + "_Text", true, lvl.Label, 0, lvl.Value + yOffset, 0,
-                        lineColor, new SimpleFont("Arial", FontSize), TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Black, 100);
-
-                    // EXTRA SAFETY: Disable auto-scale on text labels too
-                    textLabel.IsAutoScale = false;
-                }
             }
         }
 
         //=====================================================================
-        // STYLE CONVERSION
+        // ONRENDER (ADVANCED DIRECT-TO-SCREEN GRAPHICS)
         //=====================================================================
+        
         /// <summary>
-        /// Converts a style string from XML to the appropriate DashStyleHelper enum value.
-        /// Supports multiple common names for each style.
+        /// Bypasses the standard charting timeline and draws graphics directly to the screen pixels.
+        /// This is required to make text "sticky" to the left edge of the monitor regardless of scrolling.
         /// </summary>
-        /// <param name="style">Style string from XML (e.g., "dash", "dotted")</param>
-        /// <returns>DashStyleHelper enum value</returns>
-        // Returns NinjaTrader.Gui.DashStyleHelper enum
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            // Always call the base method first, otherwise standard chart candles/lines won't draw
+            base.OnRender(chartControl, chartScale);
+
+            // Abort if the user turned off labels in UI or if there is no data
+            if (!ShowLabels || priceLevels.Count == 0)
+                return;
+
+            // 1. Configure the DirectWrite Font Settings
+            SharpDX.DirectWrite.TextFormat textFormat = new SharpDX.DirectWrite.TextFormat(
+                NinjaTrader.Core.Globals.DirectWriteFactory,
+                "Arial",
+                SharpDX.DirectWrite.FontWeight.Bold,
+                SharpDX.DirectWrite.FontStyle.Normal,
+                SharpDX.DirectWrite.FontStretch.Normal,
+                FontSize);
+
+            // Loop through each level and paint the text
+            foreach (var lvl in priceLevels)
+            {
+                // Y-AXIS POSITIONING
+                // Convert the exact price value into a physical screen pixel coordinate
+                float y = chartScale.GetYByValue(lvl.Value);
+
+                // Shift the text UP (negative Y is up in screen coords) so it sits directly above the line.
+                // Adding +2 pixels gives it a tiny breathing room so the text doesn't touch the line.
+                y -= (FontSize + 2);
+
+                // X-AXIS POSITIONING
+                // Lock the text to the absolute left edge of the charting window (ChartPanel.X).
+                // Add 10 pixels of padding so it isn't completely flush against the border.
+                float x = ChartPanel.X + 10;
+
+                // 2. Build the Text Layout engine for this specific string
+                SharpDX.DirectWrite.TextLayout textLayout = new SharpDX.DirectWrite.TextLayout(
+                    NinjaTrader.Core.Globals.DirectWriteFactory,
+                    lvl.Label,
+                    textFormat,
+                    ChartPanel.W,         // Allow the text layout box to span the whole chart width
+                    textFormat.FontSize);
+
+                // 3. Convert our standard WPF LineBrush into a high-performance Direct2D Brush
+                SharpDX.Direct2D1.Brush dxBrush = lvl.LineBrush.ToDxBrush(RenderTarget);
+
+                // 4. Paint the text to the glass of the screen
+                RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), textLayout, dxBrush);
+
+                // 5. Memory Management: Direct2D objects must be manually disposed to prevent memory leaks
+                dxBrush.Dispose();
+                textLayout.Dispose();
+            }
+
+            // Dispose of the master font formatter once the loop is finished
+            textFormat.Dispose();
+        }
+
+        //=====================================================================
+        // HELPER METHODS (COLOR & STYLE CONVERSION)
+        //=====================================================================
+        
+        /// <summary>
+        /// Safely converts a color string or Hex code into a usable WPF Brush.
+        /// </summary>
+        private Brush GetBrushFromString(string colorStr)
+        {
+            if (string.IsNullOrWhiteSpace(colorStr)) return Brushes.Green;
+
+            // Check if it's a Hex code (e.g., "#FF5733" or "#00FFAA")
+            if (colorStr.StartsWith("#"))
+            {
+                try
+                {
+                    Color customColor = (Color)ColorConverter.ConvertFromString(colorStr);
+                    SolidColorBrush customBrush = new SolidColorBrush(customColor);
+                    
+                    // CRITICAL: Custom brushes in NT8 must be frozen to prevent cross-threading crashes
+                    customBrush.Freeze(); 
+                    return customBrush;
+                }
+                catch { return Brushes.Green; } // Fallback to green if Hex is malformed
+            }
+
+            // If not Hex, check our standard dictionary
+            if (brushMap.TryGetValue(colorStr, out Brush mappedBrush))
+                return mappedBrush;
+
+            // Ultimate fallback if the user types a typo like "Gren"
+            return Brushes.Green;
+        }
+
+        /// <summary>
+        /// Translates string definitions from the XML into NinjaTrader DashStyle enums.
+        /// </summary>
         private DashStyleHelper GetDashStyle(string style)
         {
-            if (string.IsNullOrEmpty(style))
-                return DashStyleHelper.Solid;
+            if (string.IsNullOrEmpty(style)) return DashStyleHelper.Solid;
 
             switch (style.ToLower())
             {
-                case "dash":
-                case "dashed":
-                    return DashStyleHelper.Dash;
-                case "dot":
-                case "dotted":
-                    return DashStyleHelper.Dot;
-                case "dashdot":
-                case "dash-dot":
-                    return DashStyleHelper.DashDot;
-                case "dashdotdot":
-                case "dash-dot-dot":
-                    return DashStyleHelper.DashDotDot;
-                case "solid":
-                default:
-                    return DashStyleHelper.Solid;
+                case "dash": case "dashed": return DashStyleHelper.Dash;
+                case "dot": case "dotted": return DashStyleHelper.Dot;
+                case "dashdot": case "dash-dot": return DashStyleHelper.DashDot;
+                case "dashdotdot": case "dash-dot-dot": return DashStyleHelper.DashDotDot;
+                case "solid": default: return DashStyleHelper.Solid;
             }
         }
 
         //=====================================================================
-        // TEXT POSITIONING LOGIC
-        //=====================================================================
-        /// <summary>
-        /// Calculates the vertical offset for text labels based on level type.
-        /// Places support labels below, resistance above, and others at different positions.
-        /// </summary>
-        /// <param name="lvl">The level data containing type and label information</param>
-        /// <returns>Offset in price units (not ticks)</returns>
-        private double CalculateTextOffset(LevelData lvl)
-        {
-            string typeLower = lvl.Type.ToLower();
-            string labelLower = lvl.Label.ToLower();
-
-            // Rules for text positioning:
-            // - Support/Floor: Below line (negative offset)
-            // - Resistance/Target/High/Breakout: Above line (positive offset)
-            // - Current/Alert/Pivot: Slightly above (half offset)
-            // - Others: On the line (no offset)
-
-            if (typeLower.Contains("support") || labelLower.Contains("support") || labelLower.Contains("floor"))
-                return -TickSize * TextOffsetTicks;  // Below line
-
-            else if (typeLower.Contains("resistance") || labelLower.Contains("resistance") ||
-                     typeLower.Contains("target") || labelLower.Contains("target") ||
-                     labelLower.Contains("high") || labelLower.Contains("breakout"))
-                return TickSize * TextOffsetTicks;  // Above line
-
-            else if (typeLower.Contains("current") || labelLower.Contains("current") ||
-                     typeLower.Contains("alert") || typeLower.Contains("pivot"))
-                return TickSize * (TextOffsetTicks / 2);  // Slightly above
-
-            else
-                return 0;  // On the line
-        }
-
-        //=====================================================================
-        // USER-CONFIGURABLE PROPERTIES
+        // USER-CONFIGURABLE PROPERTIES (UI SETTINGS)
         //=====================================================================
         #region Properties
-
-        /// <summary>
-        /// Full path to the XML file containing price levels.
-        /// Must be accessible by NinjaTrader (check file permissions).
-        /// </summary>
+        
         [NinjaScriptProperty]
         [Display(Name = "XML File Path", Description = "Full path to the XML file containing price levels", Order = 1, GroupName = "File Settings")]
         public string XmlFilePath { get; set; }
 
-        /// <summary>
-        /// Number of ticks to offset text labels above or below the line.
-        /// Larger values move text further away.
-        /// </summary>
         [NinjaScriptProperty]
-        [Range(0, 100)]
-        [Display(Name = "Text Offset (Ticks)", Description = "Number of ticks to offset text above/below the line", Order = 2, GroupName = "Display Settings")]
-        public int TextOffsetTicks { get; set; }
-
-        /// <summary>
-        /// Toggle to show or hide text labels on price levels.
-        /// </summary>
-        [NinjaScriptProperty]
-        [Display(Name = "Show Labels", Description = "Show/hide text labels on price levels", Order = 3, GroupName = "Display Settings")]
+        [Display(Name = "Show Labels", Description = "Show/hide text labels on price levels", Order = 2, GroupName = "Display Settings")]
         public bool ShowLabels { get; set; }
 
-        /// <summary>
-        /// Font size for text labels (6-24 range).
-        /// </summary>
         [NinjaScriptProperty]
         [Range(6, 24)]
-        [Display(Name = "Font Size", Description = "Size of the text labels", Order = 4, GroupName = "Display Settings")]
+        [Display(Name = "Font Size", Description = "Size of the text labels", Order = 3, GroupName = "Display Settings")]
         public int FontSize { get; set; }
-
+        
         #endregion
     }
 }
 
 #region NinjaScript generated code. Neither change nor remove.
-// This region is automatically generated by NinjaTrader. Do not modify.
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-    {
-        private XML_PriceMarker[] cacheXML_PriceMarker;
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private XML_PriceMarker[] cacheXML_PriceMarker;
+		public XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize)
+		{
+			return XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize);
+		}
 
-        /// <summary>Overloaded method for creating the indicator</summary>
-        public XML_PriceMarker XML_PriceMarker(string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            return XML_PriceMarker(Input, xmlFilePath, textOffsetTicks, showLabels, fontSize);
-        }
-
-        /// <summary>Overloaded method with input series</summary>
-        public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            if (cacheXML_PriceMarker != null)
-                for (int idx = 0; idx < cacheXML_PriceMarker.Length; idx++)
-                    if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].TextOffsetTicks == textOffsetTicks && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EqualsInput(input))
-                        return cacheXML_PriceMarker[idx];
-            return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker() { XmlFilePath = xmlFilePath, TextOffsetTicks = textOffsetTicks, ShowLabels = showLabels, FontSize = fontSize }, input, ref cacheXML_PriceMarker);
-        }
-    }
+		public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize)
+		{
+			if (cacheXML_PriceMarker != null)
+				for (int idx = 0; idx < cacheXML_PriceMarker.Length; idx++)
+					if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EqualsInput(input))
+						return cacheXML_PriceMarker[idx];
+			return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker(){ XmlFilePath = xmlFilePath, ShowLabels = showLabels, FontSize = fontSize }, input, ref cacheXML_PriceMarker);
+		}
+	}
 }
 
 namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
-    public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-    {
-        public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            return indicator.XML_PriceMarker(Input, xmlFilePath, textOffsetTicks, showLabels, fontSize);
-        }
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize)
+		{
+			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize);
+		}
 
-        public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            return indicator.XML_PriceMarker(input, xmlFilePath, textOffsetTicks, showLabels, fontSize);
-        }
-    }
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize)
+		{
+			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize);
+		}
+	}
 }
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
-    public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-    {
-        public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            return indicator.XML_PriceMarker(Input, xmlFilePath, textOffsetTicks, showLabels, fontSize);
-        }
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize)
+		{
+			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize);
+		}
 
-        public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, int textOffsetTicks, bool showLabels, int fontSize)
-        {
-            return indicator.XML_PriceMarker(input, xmlFilePath, textOffsetTicks, showLabels, fontSize);
-        }
-    }
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize)
+		{
+			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize);
+		}
+	}
 }
 
 #endregion
