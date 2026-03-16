@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Xml;
+using System.Xml.Serialization;
 
 // Windows Presentation Foundation (WPF) namespaces used for standard UI colors
 using System.Windows;            
@@ -36,7 +37,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         //=====================================================================
         
         /// <summary>Master list holding all valid price levels parsed from the XML.</summary>
-        private List<LevelData> priceLevels = new List<LevelData>();
+        [Browsable(false)]
+		[XmlIgnore]
+		public List<LevelData> priceLevels = new List<LevelData>();
         
         /// <summary>Dictionary for fast lookup of standard WPF color names to Brush objects.</summary>
         private Dictionary<string, Brush> brushMap;
