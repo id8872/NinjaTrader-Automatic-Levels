@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v2.1  (v1.0 price levels + Forex Factory news events)
+// XML_PriceMarker v2.2  (v1.0 price levels + Forex Factory news events)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -40,7 +40,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //        a) Vertical time markers at each event's time (colour = impact,
 //           dashed, with a small "HH:mm CUR" tag at the top of the chart).
 //           Events that share the same time are grouped into ONE marker.
-//        b) An "Upcoming News" panel in the top-right corner listing the
+//        b) An "Upcoming News" panel in the bottom-left corner listing the
 //           next events (time, currency, impact, title, forecast/previous
 //           and a live countdown to the next one in the header).
 //
@@ -59,6 +59,8 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v2.2 moves the news panel from top-right to bottom-left (Jason's
+//   request, 2026-10-27) - nothing else changes.
 //   v2.1 fixes the two v2.0 compile errors from Jason's 2026-10-27 grid:
 //   the NewsImpactFilter enum moved to global scope (CS0246 in the
 //   MarketAnalyzer/Strategies wrappers) and the visible-range times are
@@ -514,7 +516,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowLabels && priceLevels.Count > 0)
                 RenderPriceLabels(chartScale);
 
-            // 3) Upcoming news panel, top-right
+            // 3) Upcoming news panel, bottom-left
             if (EnableNews && ShowNewsPanel)
                 RenderNewsPanel();
         }
@@ -655,7 +657,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         //=====================================================================
-        // NEWS - UPCOMING EVENTS PANEL (top-right)
+        // NEWS - UPCOMING EVENTS PANEL (bottom-left)
         //=====================================================================
 
         private void RenderNewsPanel()
@@ -674,8 +676,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             int rows = Math.Max(1, upcoming.Count);
             float panelH = rowH + rows * rowH + 8f;
-            float px = (float)(ChartPanel.X + ChartPanel.W) - panelW - 10f;
-            float py = (float)ChartPanel.Y + 10f;
+            // Bottom-left corner (v2.2 - moved from top-right at Jason's
+            // request; reads easier and clears the right-hand price action).
+            float px = (float)ChartPanel.X + 10f;
+            float py = Math.Max((float)ChartPanel.Y + 2f,
+                                (float)(ChartPanel.Y + ChartPanel.H) - panelH - 10f);
 
             using (SharpDX.DirectWrite.TextFormat fmt = new SharpDX.DirectWrite.TextFormat(
                 NinjaTrader.Core.Globals.DirectWriteFactory,
@@ -829,7 +834,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowNewsLines { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show News Panel", Description = "Show the upcoming-events panel in the top-right of the chart", Order = 6, GroupName = "News Feed")]
+        [Display(Name = "Show News Panel", Description = "Show the upcoming-events panel in the bottom-left of the chart", Order = 6, GroupName = "News Feed")]
         public bool ShowNewsPanel { get; set; }
 
         [NinjaScriptProperty]
