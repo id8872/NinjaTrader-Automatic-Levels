@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v2.8  (v1.0 price levels + Forex Factory news events)
+// XML_PriceMarker v2.9  (v1.0 price levels + Forex Factory news events)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -60,6 +60,11 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v2.9 drops the currency code from each news entry line (panel rows,
+//   marker tags and the alert message) when exactly ONE currency is being
+//   watched (Jason's request, 2026-10-27) - the panel header already names
+//   it once, and the freed width lets longer titles fit. With a blank
+//   (all) or multi-currency filter, entry lines keep their codes.
 //   v2.8 is a parser-quiet pass with NO behaviour change: the news filter
 //   helpers and the alert method now use plain loops instead of LINQ
 //   chains (GroupBy / OrderByDescending / Where), after NinjaTrader's
@@ -598,6 +603,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             return result;
         }
 
+        /// <summary>True when exactly one currency is being watched (v2.9). In
+        /// that case the currency code is dropped from each entry line - the
+        /// panel header already names it once - which also frees width for
+        /// longer titles. With all currencies (blank filter) or several, each
+        /// entry keeps its code.</summary>
+        private bool SingleCurrencyMode()
+        {
+            return currencyFilter.Count == 1;
+        }
+
         private string FormatCountdown(DateTime eventTime)
         {
             TimeSpan span = eventTime - DateTime.Now;
@@ -719,8 +734,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                     when = "now";
                 }
 
+                string bracket = "(" + topEvent.Impact + ")";
+                if (!SingleCurrencyMode())
+                {
+                    bracket = "(" + topEvent.Country + ", " + topEvent.Impact + ")";
+                }
                 string message = "NEWS " + when + ": " + topEvent.Title
-                               + " (" + topEvent.Country + ", " + topEvent.Impact + ") at "
+                               + " " + bracket + " at "
                                + t.ToString("HH:mm");
                 if (extra > 0)
                 {
@@ -909,7 +929,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         // Tag at the top; stagger vertically when markers crowd.
                         if (x - lastLabelX < 80f) labelRow = (labelRow + 1) % 3; else labelRow = 0;
                         lastLabelX = x;
-                        string tag = t.ToString("HH:mm") + " " + country + (count > 1 ? " (" + count + ")" : "");
+                        string tag = t.ToString("HH:mm");
+                        if (!SingleCurrencyMode())
+                            tag += " " + country;
+                        if (count > 1)
+                            tag += " (" + count + ")";
                         float tagY = top + 2 + labelRow * (tagFormat.FontSize + 3);
                         using (SharpDX.DirectWrite.TextLayout tagLayout = new SharpDX.DirectWrite.TextLayout(
                             NinjaTrader.Core.Globals.DirectWriteFactory, tag, tagFormat, 120f, tagFormat.FontSize + 2))
@@ -995,7 +1019,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         RenderTarget.FillRectangle(new SharpDX.RectangleF(px + 8, ry + 3, 8, 8), dotBrush);
                     }
 
-                    string row = ev.EventTime.ToString("ddd HH:mm") + "  " + ev.Country + "  " + ev.Title;
+                    string row = ev.EventTime.ToString("ddd HH:mm") + "  ";
+                    if (!SingleCurrencyMode())
+                        row += ev.Country + "  ";
+                    row += ev.Title;
                     if (!string.IsNullOrEmpty(ev.Forecast) || !string.IsNullOrEmpty(ev.Previous))
                         row += "   [F: " + ev.Forecast + "  P: " + ev.Previous + "]";
                     row += "  - " + FormatCountdown(ev.EventTime);
