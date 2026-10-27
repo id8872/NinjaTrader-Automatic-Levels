@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v2.7  (v1.0 price levels + Forex Factory news events)
+// XML_PriceMarker v2.8  (v1.0 price levels + Forex Factory news events)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -60,6 +60,15 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v2.8 is a parser-quiet pass with NO behaviour change: the news filter
+//   helpers and the alert method now use plain loops instead of LINQ
+//   chains (GroupBy / OrderByDescending / Where), after NinjaTrader's
+//   EDITOR parser flagged the alert method at four spots (Statement
+//   expected / Expression expected, Jason's 2026-10-27 19:35 grid) even
+//   though the F5 compile itself succeeded - those messages carry no CS
+//   code because they come from the editor's older built-in parser, not
+//   the compiler. If they ever reappear while the compile stays OK, they
+//   are cosmetic.
 //   v2.7 adds a TIME WINDOW (Jason's request, 2026-10-27): "News Show
 //   Within Hours" (default 24) limits markers, panel and alerts to events
 //   from 15 minutes ago up to that many hours ahead. 0 = the whole week.
@@ -417,7 +426,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 List<NewsEvent> parsed = ParseNewsFeed(File.ReadAllText(newsCacheFilePath));
                 DateTime today = DateTime.Today;
-                List<NewsEvent> kept = parsed.Where(e => e.EventTime >= today).ToList();
+                List<NewsEvent> kept = new List<NewsEvent>();
+                foreach (NewsEvent ev in parsed)
+                {
+                    if (ev.EventTime >= today)
+                        kept.Add(ev);
+                }
                 if (kept.Count == 0)
                     return;
 
@@ -567,14 +581,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool useWindow = NewsShowWithinHours > 0;
             DateTime windowStart = now.AddMinutes(-15);
             DateTime windowEnd = now.AddHours(NewsShowWithinHours);
+            List<NewsEvent> result = new List<NewsEvent>();
             lock (newsLock)
             {
-                return newsEvents
-                    .Where(e => e.ImpactRank >= minRank
-                             && (currencyFilter.Count == 0 || currencyFilter.Contains(e.Country))
-                             && (!useWindow || (e.EventTime >= windowStart && e.EventTime <= windowEnd)))
-                    .ToList();
+                foreach (NewsEvent e in newsEvents)
+                {
+                    if (e.ImpactRank < minRank)
+                        continue;
+                    if (currencyFilter.Count > 0 && !currencyFilter.Contains(e.Country))
+                        continue;
+                    if (useWindow && (e.EventTime < windowStart || e.EventTime > windowEnd))
+                        continue;
+                    result.Add(e);
+                }
             }
+            return result;
         }
 
         private string FormatCountdown(DateTime eventTime)
@@ -646,10 +667,29 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             DateTime now = DateTime.Now;
             int windowMinutes = Math.Max(0, NewsAlertMinutesBefore);
+            List<NewsEvent> events = GetFilteredNews(); // already sorted by time
 
-            foreach (var group in GetFilteredNews().GroupBy(e => e.EventTime).OrderBy(g => g.Key))
+            int i = 0;
+            while (i < events.Count)
             {
-                DateTime t = group.Key;
+                // Collect the group of events sharing one event time, and
+                // find the highest-impact event in it - that is the one the
+                // alert names. Plain loops only (v2.8 parser-quiet pass).
+                DateTime t = events[i].EventTime;
+                NewsEvent topEvent = events[i];
+                int topRank = -1;
+                int count = 0;
+                while (i < events.Count && events[i].EventTime == t)
+                {
+                    if (events[i].ImpactRank > topRank)
+                    {
+                        topRank = events[i].ImpactRank;
+                        topEvent = events[i];
+                    }
+                    count++;
+                    i++;
+                }
+
                 string key = t.ToString("yyyyMMddHHmm");
                 if (alertedNewsKeys.Contains(key))
                     continue;
@@ -662,22 +702,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
 
                 alertedNewsKeys.Add(key);
+                int extra = count - 1;
 
-                NewsEvent first = group.OrderByDescending(e => e.ImpactRank).First();
-                int topRank = first.ImpactRank;
-                int extra = group.Count() - 1;
-
-                // NOTE (v2.4): built with plain if/else + concatenation on
-                // purpose. The v2.3 version used a multi-line ternary with a
-                // nested-call string interpolation here, and NinjaTrader's
-                // editor parser flagged it ("Statement expected" /
-                // "Expression expected", Jason's 2026-10-27 19:11 grid).
                 string when;
                 if (minutesAway >= 0)
                 {
                     int mins = (int)Math.Ceiling(minutesAway);
                     if (mins < 1)
+                    {
                         mins = 1;
+                    }
                     when = "in " + mins + " min";
                 }
                 else
@@ -685,22 +719,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                     when = "now";
                 }
 
-                string message = "NEWS " + when + ": " + first.Title
-                               + " (" + first.Country + ", " + first.Impact + ") at "
+                string message = "NEWS " + when + ": " + topEvent.Title
+                               + " (" + topEvent.Country + ", " + topEvent.Impact + ") at "
                                + t.ToString("HH:mm");
                 if (extra > 0)
+                {
                     message += " +" + extra + " more at this time";
+                }
 
                 Print("XML_PriceMarker " + message);
                 try
                 {
-                    Alert("XMLPM_News_" + key,
-                          topRank >= 3 ? Priority.High : Priority.Medium,
-                          message,
-                          ResolveAlertSoundPath(),
-                          0,
-                          Brushes.White,
-                          topRank >= 3 ? Brushes.Red : Brushes.DarkOrange);
+                    Priority alertPriority = Priority.Medium;
+                    Brush alertBackground = Brushes.DarkOrange;
+                    if (topRank >= 3)
+                    {
+                        alertPriority = Priority.High;
+                        alertBackground = Brushes.Red;
+                    }
+                    Alert("XMLPM_News_" + key, alertPriority, message,
+                          ResolveAlertSoundPath(), 0, Brushes.White, alertBackground);
                 }
                 catch (Exception ex)
                 {
