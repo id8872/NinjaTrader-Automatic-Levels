@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v2.2  (v1.0 price levels + Forex Factory news events)
+// XML_PriceMarker v2.3  (v1.0 price levels + Forex Factory news events)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -41,6 +41,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //           dashed, with a small "HH:mm CUR" tag at the top of the chart).
 //           Events that share the same time are grouped into ONE marker.
 //        b) An "Upcoming News" panel in the bottom-left corner listing the
+//           next events, plus (v2.3) a sound alert before each event time.
 //           next events (time, currency, impact, title, forecast/previous
 //           and a live countdown to the next one in the header).
 //
@@ -59,6 +60,11 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v2.3 adds a SOUND ALERT (Jason's request, 2026-10-27): once per event
+//   time, News Alert Minutes Before (default 5) ahead of any event matching
+//   the filters, using NT's Alert() - realtime only, grouped so a cluster
+//   beeps once. It also sets IsSuspendedWhileInactive = false so the alert
+//   can fire while this chart's tab is not the active one.
 //   v2.2 moves the news panel from top-right to bottom-left (Jason's
 //   request, 2026-10-27) - nothing else changes.
 //   v2.1 fixes the two v2.0 compile errors from Jason's 2026-10-27 grid:
@@ -159,6 +165,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Upper-case currency codes to keep; empty set = keep all currencies.</summary>
         private HashSet<string> currencyFilter = new HashSet<string>();
 
+        /// <summary>Event-time keys ("yyyyMMddHHmm") that have already sounded their
+        /// alert, so each event time alerts exactly once. Cleared on reload.</summary>
+        private HashSet<string> alertedNewsKeys = new HashSet<string>();
+
         //=====================================================================
         // LIFECYCLE MANAGEMENT
         //=====================================================================
@@ -177,7 +187,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // CRITICAL UI OVERRIDES
                 PaintPriceMarkers           = false;
                 ScaleJustification          = ScaleJustification.Right;
-                IsSuspendedWhileInactive    = true;
+                // v2.3: false (was true in v1.0) - a suspended indicator cannot
+                // fire its news sound alert on time. Cost is negligible: this
+                // indicator does almost no per-bar work.
+                IsSuspendedWhileInactive    = false;
                 IsAutoScale                 = false;
 
                 // Default User UI Settings - price levels (unchanged from v1.0)
@@ -194,6 +207,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowNewsPanel               = true;
                 NewsRefreshMinutes          = 60;
                 NewsPanelMaxEvents          = 5;
+                NewsAlertEnabled            = true;
+                NewsAlertMinutesBefore      = 5;
+                NewsAlertSoundFile          = "Alert1.wav";
             }
             else if (State == State.DataLoaded)
             {
@@ -478,6 +494,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 FetchNewsAsync();
             }
 
+            // News sound alert (realtime only - checked here so it runs even
+            // though the static price lines further down are drawn only once).
+            if (EnableNews && NewsAlertEnabled && State == State.Realtime)
+                CheckNewsAlerts();
+
             // Exit immediately if lines are already drawn, or if we don't have at least 2 bars yet
             if (linesDrawn || CurrentBar < 1 || priceLevels.Count == 0)
                 return;
@@ -495,6 +516,75 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Lock the flag so OnBarUpdate never redraws these static lines again
             linesDrawn = true;
+        }
+
+        //=====================================================================
+        // NEWS - SOUND ALERT
+        // Fires once per event TIME (events sharing a time, e.g. the 08:30
+        // cluster, beep once - not once per event) when the event is within
+        // NewsAlertMinutesBefore minutes. Called from OnBarUpdate on bar
+        // close and gated to State.Realtime by the caller, so historical
+        // bars rushing past old events can never trigger it.
+        //=====================================================================
+
+        private void CheckNewsAlerts()
+        {
+            DateTime now = DateTime.Now;
+            int windowMinutes = Math.Max(0, NewsAlertMinutesBefore);
+
+            foreach (var group in GetFilteredNews().GroupBy(e => e.EventTime).OrderBy(g => g.Key))
+            {
+                DateTime t = group.Key;
+                string key = t.ToString("yyyyMMddHHmm");
+                if (alertedNewsKeys.Contains(key))
+                    continue;
+
+                double minutesAway = (t - now).TotalMinutes;
+                // Inside the warning window, and not more than a minute past
+                // the event (a bar close can land just after the top of the
+                // minute) - older than that, stay silent rather than beep late.
+                if (minutesAway > windowMinutes || minutesAway < -1)
+                    continue;
+
+                alertedNewsKeys.Add(key);
+
+                NewsEvent first = group.OrderByDescending(e => e.ImpactRank).First();
+                int topRank = first.ImpactRank;
+                int extra = group.Count() - 1;
+                string when = minutesAway >= 0
+                    ? $"in {Math.Max(1, (int)Math.Ceiling(minutesAway))} min"
+                    : "now";
+                string message = $"NEWS {when}: {first.Title} ({first.Country}, {first.Impact}) at {t:HH:mm}"
+                               + (extra > 0 ? $" +{extra} more at this time" : "");
+
+                Print("XML_PriceMarker " + message);
+                try
+                {
+                    Alert("XMLPM_News_" + key,
+                          topRank >= 3 ? Priority.High : Priority.Medium,
+                          message,
+                          ResolveAlertSoundPath(),
+                          0,
+                          Brushes.White,
+                          topRank >= 3 ? Brushes.Red : Brushes.DarkOrange);
+                }
+                catch (Exception ex)
+                {
+                    // An alert failure (bad sound file name etc.) must never
+                    // break the indicator - the Print above already logged it.
+                    Print("XML_PriceMarker News Alert Error: " + ex.Message);
+                }
+            }
+        }
+
+        /// <summary>Alert() wants a sound file: a bare name (e.g. "Alert1.wav") is
+        /// resolved against NinjaTrader's sounds folder; a full path is used as-is.</summary>
+        private string ResolveAlertSoundPath()
+        {
+            string sound = string.IsNullOrWhiteSpace(NewsAlertSoundFile) ? "Alert1.wav" : NewsAlertSoundFile.Trim();
+            if (sound.Contains("\\") || sound.Contains(":"))
+                return sound;
+            return NinjaTrader.Core.Globals.SoundFilePath + "\\" + sound;
         }
 
         //=====================================================================
@@ -847,6 +937,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "News Panel Max Events", Description = "How many upcoming events the panel lists", Order = 8, GroupName = "News Feed")]
         public int NewsPanelMaxEvents { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Enable News Alert", Description = "Play a sound before news events that match the filters", Order = 9, GroupName = "News Feed")]
+        public bool NewsAlertEnabled { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 120)]
+        [Display(Name = "News Alert Minutes Before", Description = "How many minutes before an event the sound alert fires (once per event time)", Order = 10, GroupName = "News Feed")]
+        public int NewsAlertMinutesBefore { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "News Alert Sound File", Description = "Sound for the news alert: a file name from NinjaTrader's sounds folder (e.g. Alert1.wav) or a full path to a .wav", Order = 11, GroupName = "News Feed")]
+        public string NewsAlertSoundFile { get; set; }
+
         #endregion
     }
 }
@@ -858,18 +961,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private XML_PriceMarker[] cacheXML_PriceMarker;
-		public XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			return XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents);
 		}
 
-		public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			if (cacheXML_PriceMarker != null)
 				for (int idx = 0; idx < cacheXML_PriceMarker.Length; idx++)
-					if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EnableNews == enableNews && cacheXML_PriceMarker[idx].NewsFeedUrl == newsFeedUrl && cacheXML_PriceMarker[idx].NewsCurrencies == newsCurrencies && cacheXML_PriceMarker[idx].NewsMinImpact == newsMinImpact && cacheXML_PriceMarker[idx].ShowNewsLines == showNewsLines && cacheXML_PriceMarker[idx].ShowNewsPanel == showNewsPanel && cacheXML_PriceMarker[idx].NewsRefreshMinutes == newsRefreshMinutes && cacheXML_PriceMarker[idx].NewsPanelMaxEvents == newsPanelMaxEvents && cacheXML_PriceMarker[idx].EqualsInput(input))
+					if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EnableNews == enableNews && cacheXML_PriceMarker[idx].NewsFeedUrl == newsFeedUrl && cacheXML_PriceMarker[idx].NewsCurrencies == newsCurrencies && cacheXML_PriceMarker[idx].NewsMinImpact == newsMinImpact && cacheXML_PriceMarker[idx].ShowNewsLines == showNewsLines && cacheXML_PriceMarker[idx].ShowNewsPanel == showNewsPanel && cacheXML_PriceMarker[idx].NewsRefreshMinutes == newsRefreshMinutes && cacheXML_PriceMarker[idx].NewsPanelMaxEvents == newsPanelMaxEvents && cacheXML_PriceMarker[idx].NewsAlertEnabled == newsAlertEnabled && cacheXML_PriceMarker[idx].NewsAlertMinutesBefore == newsAlertMinutesBefore && cacheXML_PriceMarker[idx].NewsAlertSoundFile == newsAlertSoundFile && cacheXML_PriceMarker[idx].EqualsInput(input))
 						return cacheXML_PriceMarker[idx];
-			return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker(){ XmlFilePath = xmlFilePath, ShowLabels = showLabels, FontSize = fontSize, EnableNews = enableNews, NewsFeedUrl = newsFeedUrl, NewsCurrencies = newsCurrencies, NewsMinImpact = newsMinImpact, ShowNewsLines = showNewsLines, ShowNewsPanel = showNewsPanel, NewsRefreshMinutes = newsRefreshMinutes, NewsPanelMaxEvents = newsPanelMaxEvents }, input, ref cacheXML_PriceMarker);
+			return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker(){ XmlFilePath = xmlFilePath, ShowLabels = showLabels, FontSize = fontSize, EnableNews = enableNews, NewsFeedUrl = newsFeedUrl, NewsCurrencies = newsCurrencies, NewsMinImpact = newsMinImpact, ShowNewsLines = showNewsLines, ShowNewsPanel = showNewsPanel, NewsRefreshMinutes = newsRefreshMinutes, NewsPanelMaxEvents = newsPanelMaxEvents, NewsAlertEnabled = newsAlertEnabled, NewsAlertMinutesBefore = newsAlertMinutesBefore, NewsAlertSoundFile = newsAlertSoundFile }, input, ref cacheXML_PriceMarker);
 		}
 	}
 }
@@ -878,12 +981,12 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents);
 		}
 
-		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents);
 		}
@@ -894,12 +997,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents);
 		}
 
-		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents)
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input , string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile)
 		{
 			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents);
 		}
