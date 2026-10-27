@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v2.3  (v1.0 price levels + Forex Factory news events)
+// XML_PriceMarker v2.6  (v1.0 price levels + Forex Factory news events)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -60,6 +60,19 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v2.6 adds a DISK CACHE (Jason's request, 2026-10-27): every successful
+//   download saves the raw feed to Documents\NinjaTrader 8\
+//   XML_PriceMarker_NewsCache.json, loaded first at startup so markers,
+//   panel and alerts survive a restart with no internet. Guards: cache
+//   files over 7 days old are ignored and events dated before today are
+//   dropped on load. Failed downloads now also back off 5 minutes between
+//   retries instead of retrying on every bar close.
+//   v2.5 drops the NinjaTrader.Core.Globals.SoundFilePath reference
+//   (CS0117 - it does not exist in current NT8); Alert() resolves a bare
+//   sound file name against NT's own sounds folder by itself.
+//   v2.4 rewrites the alert-message construction in plain if/else +
+//   concatenation - NT's editor parser rejected the v2.3 multi-line
+//   ternary/interpolation at that spot. No behaviour change from v2.3.
 //   v2.3 adds a SOUND ALERT (Jason's request, 2026-10-27): once per event
 //   time, News Alert Minutes Before (default 5) ahead of any event matching
 //   the filters, using NT's Alert() - realtime only, grouped so a cluster
@@ -159,6 +172,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>When the feed was last fetched (local time). MinValue = never.</summary>
         private DateTime lastNewsFetch = DateTime.MinValue;
 
+        /// <summary>When a download was last ATTEMPTED. Used to back off retries
+        /// after a failure instead of retrying on every bar close (v2.6).</summary>
+        private DateTime lastNewsAttempt = DateTime.MinValue;
+
+        /// <summary>True once any news data exists - from the feed OR the disk cache.</summary>
+        private bool newsDataLoaded = false;
+
+        /// <summary>Disk cache of the raw feed JSON (v2.6), in the NinjaTrader 8
+        /// user folder: Documents\NinjaTrader 8\XML_PriceMarker_NewsCache.json</summary>
+        private readonly string newsCacheFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "NinjaTrader 8", "XML_PriceMarker_NewsCache.json");
+
         /// <summary>Short status shown in the panel while loading / after an error.</summary>
         private string newsStatus = "not loaded yet";
 
@@ -228,11 +254,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 LoadPriceLevels();
 
-                // Build the currency filter set once, then kick off the first
-                // background download. Nothing here blocks the chart thread.
+                // Build the currency filter set once, load any disk cache so
+                // the chart has news instantly (even offline), then kick off
+                // the first background download. The cache read is one small
+                // local file; the download never blocks the chart thread.
                 BuildCurrencyFilter();
                 if (EnableNews)
+                {
+                    LoadNewsCache();
                     FetchNewsAsync();
+                }
             }
         }
 
@@ -308,6 +339,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             newsFetchInProgress = true;
+            lastNewsAttempt = DateTime.Now;
             newsStatus = "loading...";
             string url = NewsFeedUrl;
 
@@ -333,8 +365,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         newsEvents = parsed;
                     }
                     lastNewsFetch = DateTime.Now;
+                    newsDataLoaded = true;
                     newsStatus = "updated " + lastNewsFetch.ToString("HH:mm");
                     Print($"XML_PriceMarker News: loaded {parsed.Count} events from the calendar feed.");
+                    SaveNewsCache(json);
                 }
                 catch (Exception ex)
                 {
@@ -347,6 +381,69 @@ namespace NinjaTrader.NinjaScript.Indicators
                     newsFetchInProgress = false;
                 }
             });
+        }
+
+        //=====================================================================
+        // NEWS - DISK CACHE (v2.6)
+        // Every successful download saves the raw feed JSON to disk. On the
+        // next start the cache is loaded FIRST, so the chart has its markers,
+        // panel and alerts immediately - and keeps them if the internet or
+        // the feed is down. Two staleness guards stop an old cache from
+        // misleading anyone: a cache file older than 7 days is ignored, and
+        // events dated before today are dropped on load (the feed only ever
+        // covers the current week, so anything older is last week's news).
+        //=====================================================================
+
+        private void LoadNewsCache()
+        {
+            try
+            {
+                if (!File.Exists(newsCacheFilePath))
+                    return;
+
+                DateTime written = File.GetLastWriteTime(newsCacheFilePath);
+                if ((DateTime.Now - written).TotalDays > 7)
+                {
+                    Print("XML_PriceMarker News: disk cache is over 7 days old - ignoring it.");
+                    return;
+                }
+
+                List<NewsEvent> parsed = ParseNewsFeed(File.ReadAllText(newsCacheFilePath));
+                DateTime today = DateTime.Today;
+                List<NewsEvent> kept = parsed.Where(e => e.EventTime >= today).ToList();
+                if (kept.Count == 0)
+                    return;
+
+                lock (newsLock)
+                {
+                    newsEvents = kept;
+                }
+                newsDataLoaded = true;
+                newsStatus = "from cache " + written.ToString("ddd HH:mm");
+                Print("XML_PriceMarker News: loaded " + kept.Count + " events from disk cache (saved "
+                    + written.ToString("ddd HH:mm") + "). Fetching fresh data...");
+            }
+            catch (Exception ex)
+            {
+                // A broken cache file must never stop the indicator - the
+                // live fetch right after this will sort things out.
+                Print("XML_PriceMarker News Cache Error: " + ex.Message);
+            }
+        }
+
+        private void SaveNewsCache(string json)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(newsCacheFilePath);
+                if (!Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                File.WriteAllText(newsCacheFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                Print("XML_PriceMarker News Cache Save Error: " + ex.Message);
+            }
         }
 
         //=====================================================================
@@ -489,7 +586,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             // News auto-refresh: checked on bar close, so a 1-minute chart
             // re-checks every minute and fetches when the interval has passed.
             if (EnableNews && !newsFetchInProgress
-                && (DateTime.Now - lastNewsFetch).TotalMinutes >= Math.Max(1, NewsRefreshMinutes))
+                && (DateTime.Now - lastNewsFetch).TotalMinutes >= Math.Max(1, NewsRefreshMinutes)
+                && (DateTime.Now - lastNewsAttempt).TotalMinutes >= 5)
             {
                 FetchNewsAsync();
             }
@@ -551,11 +649,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                 NewsEvent first = group.OrderByDescending(e => e.ImpactRank).First();
                 int topRank = first.ImpactRank;
                 int extra = group.Count() - 1;
-                string when = minutesAway >= 0
-                    ? $"in {Math.Max(1, (int)Math.Ceiling(minutesAway))} min"
-                    : "now";
-                string message = $"NEWS {when}: {first.Title} ({first.Country}, {first.Impact}) at {t:HH:mm}"
-                               + (extra > 0 ? $" +{extra} more at this time" : "");
+
+                // NOTE (v2.4): built with plain if/else + concatenation on
+                // purpose. The v2.3 version used a multi-line ternary with a
+                // nested-call string interpolation here, and NinjaTrader's
+                // editor parser flagged it ("Statement expected" /
+                // "Expression expected", Jason's 2026-10-27 19:11 grid).
+                string when;
+                if (minutesAway >= 0)
+                {
+                    int mins = (int)Math.Ceiling(minutesAway);
+                    if (mins < 1)
+                        mins = 1;
+                    when = "in " + mins + " min";
+                }
+                else
+                {
+                    when = "now";
+                }
+
+                string message = "NEWS " + when + ": " + first.Title
+                               + " (" + first.Country + ", " + first.Impact + ") at "
+                               + t.ToString("HH:mm");
+                if (extra > 0)
+                    message += " +" + extra + " more at this time";
 
                 Print("XML_PriceMarker " + message);
                 try
@@ -577,14 +694,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        /// <summary>Alert() wants a sound file: a bare name (e.g. "Alert1.wav") is
-        /// resolved against NinjaTrader's sounds folder; a full path is used as-is.</summary>
+        /// <summary>Returns the sound to hand to Alert(). A bare file name (e.g.
+        /// "Alert1.wav") is passed through unchanged - Alert() itself resolves
+        /// bare names against NinjaTrader's sounds folder
+        /// (the NinjaTrader 8\sounds folder). A full path is honoured as-is.
+        /// (v2.5: an earlier version built the path from
+        /// NinjaTrader.Core.Globals.SoundFilePath, which does not exist in
+        /// current NT8 builds - CS0117 in Jason's 2026-10-27 19:14 grid.)</summary>
         private string ResolveAlertSoundPath()
         {
             string sound = string.IsNullOrWhiteSpace(NewsAlertSoundFile) ? "Alert1.wav" : NewsAlertSoundFile.Trim();
-            if (sound.Contains("\\") || sound.Contains(":"))
-                return sound;
-            return NinjaTrader.Core.Globals.SoundFilePath + "\\" + sound;
+            return sound;
         }
 
         //=====================================================================
@@ -802,7 +922,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (upcoming.Count == 0)
                 {
-                    string empty = lastNewsFetch == DateTime.MinValue
+                    string empty = !newsDataLoaded
                         ? "Waiting for the calendar feed..."
                         : "No matching events left this week.";
                     DrawPanelText(empty, fmt, grayBrush, px + 8, py + 4 + rowH, panelW - 16);
