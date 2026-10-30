@@ -26,7 +26,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // ============================================================================
-// XML_PriceMarker v3.0  (v1.0 price levels + FF news events + axis ladder)
+// XML_PriceMarker v3.1  (v1.0 price levels + FF news events + axis level lines)
 //
 // WHAT IT DOES
 //   1) PRICE LEVELS (unchanged from v1.0)
@@ -45,18 +45,14 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //           next events (time, currency, impact, title, forecast/previous
 //           and a live countdown to the next one in the header).
 //
-//   3) AXIS LEVEL LADDER (new in v3.0)
-//      Colour-coded price tags on the right-hand price axis, one every
-//      "Axis Spacing" points (or ticks) - e.g. every 10 - so the distance
-//      price moved between two tags can be counted at a glance. Every Nth
-//      level (e.g. every 50) can be highlighted in a second "major"
-//      colour. NinjaTrader does not let an indicator recolour its own
-//      axis numbers, so the ladder paints its own tags (dark backing
-//      plate, same look as the news panel) over the axis strip, plus a
-//      small tick reaching into the chart. Drawn in OnRender, so the
-//      ladder follows zoom and pan and only the visible range is drawn;
-//      zoom too far out and it falls back to slim ticks until the tags
-//      fit again.
+//   3) AXIS LEVEL LINES (new in v3.0, reworked in v3.1)
+//      A faint full-width horizontal line every "Axis Spacing" points
+//      (or ticks) - e.g. every 10 - colour-coded so the distance price
+//      moved between two lines can be counted at a glance. Every Nth
+//      level (e.g. every 50) draws in a second "major" colour, solid and
+//      stronger. No text, no backing plates - nothing covers the price
+//      bars. Drawn in OnRender, so the lines follow zoom and pan and
+//      only the visible range is ever drawn.
 //
 // NOTES FOR THE TRADER
 //   - The download happens on a background thread so the chart never freezes.
@@ -73,6 +69,16 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //     "USD,CAD" for both.
 //   - No external DLLs are needed: the JSON is parsed with a small built-in
 //     parser, so this compiles in a stock NinjaTrader 8 install.
+//   v3.1 turns the axis ladder from TAGS into LINES (Jason's request,
+//   2026-10-30): the text tags and dark backing plates are gone - each
+//   level is now a faint full-width dotted line in the level colour, and
+//   majors are solid, thicker and stronger - so nothing covers the price
+//   bars at the right edge any more. A new "Axis Line Opacity" setting
+//   (default 30%) dials the faintness; majors always draw 30 points
+//   stronger. Also fixes a v3.0 bug: "Major Level Every" was tested
+//   against the line COUNT, not the price, so with 10-point spacing and
+//   major = 50 the majors only appeared every 500 points; the level price
+//   itself is tested now. "Show Level Values" was removed with the tags.
 //   v3.0 adds the AXIS LEVEL LADDER (Jason's request, 2026-10-30):
 //   colour-coded price tags + ticks on the right-hand axis, one every
 //   "Axis Spacing" in points or ticks (default 10 points, cyan), with an
@@ -157,7 +163,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// XML_PriceMarker
     /// Reads a custom XML file containing price levels and draws them on the chart,
     /// plots Forex Factory news events from the faireconomy JSON feed,
-    /// and (v3.0) paints a colour-coded level ladder on the right-hand price axis.
+    /// and (v3.1) draws a colour-coded level line ladder across the chart.
     /// </summary>
     public class XML_PriceMarker : Indicator
     {
@@ -254,7 +260,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description                 = @"Plots price levels from XML file with screen-locked text, Forex Factory news events on the chart timeline and in an upcoming-events panel, and a colour-coded axis level ladder on the right-hand price scale.";
+                Description                 = @"Plots price levels from XML file with screen-locked text, Forex Factory news events on the chart timeline and in an upcoming-events panel, and a colour-coded level line ladder across the chart.";
                 Name                        = "XML_PriceMarker";
                 Calculate                   = Calculate.OnBarClose;
                 IsOverlay                   = true;
@@ -289,11 +295,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 NewsAlertSoundFile          = "Alert1.wav";
                 NewsShowWithinHours         = 24;
 
-                // Default User UI Settings - axis level ladder (new in v3.0)
+                // Default User UI Settings - axis level lines (v3.0, lines in v3.1)
                 EnableAxisLevels            = true;
                 AxisSpacingMode             = AxisSpacingMode.Points;
                 AxisSpacing                 = 10;
-                ShowAxisLevelLabels         = true;
+                AxisLevelOpacity            = 30;
                 AxisLevelColor              = Brushes.Cyan;
                 AxisMajorEvery              = 50;
                 AxisMajorColor              = Brushes.Orange;
@@ -833,8 +839,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (RenderTarget == null || ChartPanel == null)
                 return;
 
-            // 0) Axis level ladder (v3.0) - drawn first so the news lines,
-            //    price labels and the news panel render on top of it.
+            // 0) Axis level lines (v3.1) - drawn first so the news lines,
+            //    price labels and the news panel render on top of them.
             if (EnableAxisLevels)
                 RenderAxisLevels(chartScale);
 
@@ -886,17 +892,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         //=====================================================================
-        // AXIS LEVEL LADDER (v3.0)
-        // Colour-coded price tags + ticks on the right-hand price axis, one
-        // every AxisSpacing (points or ticks) - e.g. every 10 - so the
-        // distance price moved can be counted at a glance. An optional
-        // "major" level (e.g. every 50) is drawn in a second colour with a
-        // thicker tick. NinjaTrader does not let an indicator recolour its
-        // built-in axis numbers, so the ladder paints its own tags (dark
-        // backing plate, same look as the news panel) over the axis strip.
-        // Drawn in OnRender so it follows zoom / pan, only the visible
-        // range is ever drawn, and the level decimals follow the
-        // instrument's tick size (ES 0.25 -> 2 decimals).
+        // AXIS LEVEL LINES (v3.1)
+        // A faint full-width dotted line every AxisSpacing (points or ticks)
+        // - e.g. every 10 - in the level colour, with the "major" level
+        // (e.g. every 50) solid, thicker and stronger in a second colour.
+        // No text, no backing plates - nothing covers the price bars.
+        // Drawn in OnRender so the lines follow zoom / pan, and only the
+        // visible range is ever drawn. Major levels are decided from the
+        // level PRICE (v3.1 fix) so "Major Level Every = 50" really means
+        // every 50 points/ticks regardless of the spacing.
         //=====================================================================
 
         private void RenderAxisLevels(ChartScale chartScale)
@@ -916,23 +920,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (maxP <= minP)
                 return;
 
-            int    dp         = GetPriceDecimals();
-            float  panelRight = (float)(ChartPanel.X + ChartPanel.W);
-            float  boxH       = FontSize + 5f;
-            float  lastTagY   = float.MinValue;
-            int    drawn      = 0;
+            float left  = (float)ChartPanel.X;
+            float right = left + (float)ChartPanel.W;
+            int   drawn = 0;
 
-            using (SharpDX.DirectWrite.TextFormat fmt = new SharpDX.DirectWrite.TextFormat(
-                NinjaTrader.Core.Globals.DirectWriteFactory,
-                "Arial",
-                SharpDX.DirectWrite.FontWeight.Bold,
-                SharpDX.DirectWrite.FontStyle.Normal,
-                SharpDX.DirectWrite.FontStretch.Normal,
-                FontSize))
+            double majorUnit = AxisSpacingMode == AxisSpacingMode.Ticks
+                ? AxisMajorEvery * TickSize : AxisMajorEvery;
+
+            float regularOpacity = Math.Max(0.05f, Math.Min(1f, AxisLevelOpacity / 100f));
+            float majorOpacity   = Math.Min(0.9f, regularOpacity + 0.30f);
+
+            using (SharpDX.Direct2D1.StrokeStyle dashStyle = new SharpDX.Direct2D1.StrokeStyle(
+                RenderTarget.Factory,
+                new SharpDX.Direct2D1.StrokeStyleProperties { DashStyle = SharpDX.Direct2D1.DashStyle.Dash }))
+            using (SharpDX.Direct2D1.StrokeStyle solidStyle = new SharpDX.Direct2D1.StrokeStyle(
+                RenderTarget.Factory,
+                new SharpDX.Direct2D1.StrokeStyleProperties()))
             {
                 // Visible levels only, capped so a tiny spacing on a
-                // zoomed-out chart can never create hundreds of text
-                // layouts per frame.
+                // zoomed-out chart can never create hundreds of lines
+                // per frame.
                 for (double level = Math.Ceiling(minP / spacing) * spacing;
                      level <= maxP + 1e-9 && drawn < 300;
                      level += spacing)
@@ -940,95 +947,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                     drawn++;
                     level = Math.Round(level, 8); // snap 5950.0000000001 -> 5950
 
+                    // Major level? Decided from the level PRICE (v3.1 fix),
+                    // not the line count.
+                    bool major = AxisMajorEvery > 0 && majorUnit > 0
+                        && Math.Abs(level / majorUnit - Math.Round(level / majorUnit)) < 1e-6;
+
                     float y = (float)chartScale.GetYByValue(level);
 
-                    // Major level? Decided from the step index (level / spacing)
-                    // so the pattern never depends on where the visible range
-                    // happens to start.
-                    long stepIndex = (long)Math.Round(level / spacing, MidpointRounding.AwayFromZero);
-                    bool major = AxisMajorEvery > 0
-                        && Math.Abs(level / spacing - stepIndex) < 1e-6
-                        && stepIndex % AxisMajorEvery == 0;
-
-                    Brush brush = major ? AxisMajorColor : AxisLevelColor;
-
-                    // Coloured ticks only (no value printed).
-                    if (!ShowAxisLevelLabels)
+                    using (SharpDX.Direct2D1.Brush dxBrush = (major ? AxisMajorColor : AxisLevelColor).ToDxBrush(RenderTarget))
                     {
-                        using (SharpDX.Direct2D1.Brush dxBrush = brush.ToDxBrush(RenderTarget))
-                        {
-                            RenderTarget.DrawLine(
-                                new SharpDX.Vector2(panelRight - 14f, y),
-                                new SharpDX.Vector2(panelRight - 4f, y),
-                                dxBrush,
-                                major ? 2f : 1.25f);
-                        }
-                        continue;
-                    }
-
-                    // Zoomed far out: tags would overlap - fall back to slim
-                    // ticks until the spacing opens up again.
-                    if (lastTagY > float.MinValue && Math.Abs(lastTagY - y) < boxH + 2f)
-                    {
-                        using (SharpDX.Direct2D1.Brush dxBrush = brush.ToDxBrush(RenderTarget))
-                        {
-                            RenderTarget.DrawLine(
-                                new SharpDX.Vector2(panelRight - 14f, y),
-                                new SharpDX.Vector2(panelRight - 4f, y),
-                                dxBrush, 1f);
-                        }
-                        continue;
-                    }
-
-                    string text = level.ToString("F" + dp, CultureInfo.InvariantCulture);
-                    if (text.IndexOf('.') >= 0)
-                        text = text.TrimEnd('0').TrimEnd('.');
-
-                    using (SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
-                        NinjaTrader.Core.Globals.DirectWriteFactory, text, fmt, 140f, fmt.FontSize + 4))
-                    using (SharpDX.Direct2D1.Brush dxBrush = brush.ToDxBrush(RenderTarget))
-                    {
-                        float textW = layout.Metrics.Width;
-                        float boxW  = Math.Max(textW, 40f) + 10f;
-                        float boxX  = panelRight - boxW - 2f;
-                        float boxY  = y - boxH / 2f;
-
-                        // Dark backing plate - hides NinjaTrader's own axis
-                        // number underneath so the colour ladder reads
-                        // cleanly (same look as the news panel).
-                        using (SharpDX.Direct2D1.SolidColorBrush bgBrush =
-                            new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.85f)))
-                        {
-                            RenderTarget.FillRectangle(new SharpDX.RectangleF(boxX, boxY, boxW, boxH), bgBrush);
-                        }
-
-                        // Small tick reaching left out of the tag into the chart.
+                        dxBrush.Opacity = major ? majorOpacity : regularOpacity;
                         RenderTarget.DrawLine(
-                            new SharpDX.Vector2(boxX - 8f, y),
-                            new SharpDX.Vector2(boxX - 2f, y),
+                            new SharpDX.Vector2(left, y),
+                            new SharpDX.Vector2(right, y),
                             dxBrush,
-                            major ? 2f : 1.25f);
-
-                        RenderTarget.DrawTextLayout(new SharpDX.Vector2(boxX + 5f, boxY + 2f), layout, dxBrush);
+                            major ? 1.6f : 1f,
+                            major ? solidStyle : dashStyle);
                     }
-
-                    lastTagY = y;
                 }
             }
-        }
-
-        /// <summary>Number of decimals implied by the instrument's tick size
-        /// (ES 0.25 -> 2, CL 0.01 -> 2 ...), used to format the axis tag prices.</summary>
-        private int GetPriceDecimals()
-        {
-            int dp = 0;
-            double t = TickSize;
-            while (dp < 8 && Math.Abs(t - Math.Round(t)) > 1e-9)
-            {
-                t *= 10;
-                dp++;
-            }
-            return dp;
         }
 
         //=====================================================================
@@ -1349,7 +1286,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int NewsShowWithinHours { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Axis Levels", Description = "Colour-coded price tags on the right-hand price axis, one every 'Axis Spacing' (points or ticks), so spacing can be counted at a glance", Order = 1, GroupName = "Axis Levels")]
+        [Display(Name = "Enable Axis Levels", Description = "Faint colour-coded horizontal lines, one every 'Axis Spacing' (points or ticks), so spacing can be counted at a glance", Order = 1, GroupName = "Axis Levels")]
         public bool EnableAxisLevels { get; set; }
 
         [NinjaScriptProperty]
@@ -1358,16 +1295,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(0.000001, 1000000)]
-        [Display(Name = "Axis Spacing", Description = "Gap between two axis tags in the unit chosen above, e.g. 10 = a tag every 10 points (or 10 ticks). ES example: 10 ticks = 2.5 points", Order = 3, GroupName = "Axis Levels")]
+        [Display(Name = "Axis Spacing", Description = "Gap between two level lines in the unit chosen above, e.g. 10 = a line every 10 points (or 10 ticks). ES example: 10 ticks = 2.5 points", Order = 3, GroupName = "Axis Levels")]
         public double AxisSpacing { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Level Values", Description = "Print the price on each axis tag. Untick for coloured ticks only", Order = 4, GroupName = "Axis Levels")]
-        public bool ShowAxisLevelLabels { get; set; }
+        [Range(5, 100)]
+        [Display(Name = "Axis Line Opacity", Description = "How faint the regular level lines are, 5-100 percent (major lines always draw 30 points stronger)", Order = 4, GroupName = "Axis Levels")]
+        public int AxisLevelOpacity { get; set; }
 
         [XmlIgnore]
         [NinjaScriptProperty]
-        [Display(Name = "Level Colour", Description = "Colour of the regular axis tags", Order = 5, GroupName = "Axis Levels")]
+        [Display(Name = "Level Colour", Description = "Colour of the regular level lines", Order = 5, GroupName = "Axis Levels")]
         public Brush AxisLevelColor { get; set; }
 
         [Browsable(false)]
@@ -1379,12 +1317,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(0, 100000)]
-        [Display(Name = "Major Level Every", Description = "Highlight every Nth axis level in the major colour (same unit as the spacing). 0 = off. Example: spacing 10, major 50 highlights every 50", Order = 6, GroupName = "Axis Levels")]
+        [Display(Name = "Major Level Every", Description = "Draw every Nth axis level in the major colour, solid and stronger - same unit as the spacing, e.g. spacing 10 + major 50 = a strong line every 50 points. 0 = off", Order = 6, GroupName = "Axis Levels")]
         public int AxisMajorEvery { get; set; }
 
         [XmlIgnore]
         [NinjaScriptProperty]
-        [Display(Name = "Major Level Colour", Description = "Colour of the major axis tags", Order = 7, GroupName = "Axis Levels")]
+        [Display(Name = "Major Level Colour", Description = "Colour of the major level lines", Order = 7, GroupName = "Axis Levels")]
         public Brush AxisMajorColor { get; set; }
 
         [Browsable(false)]
@@ -1405,18 +1343,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private XML_PriceMarker[] cacheXML_PriceMarker;
-		public XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
-			return XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, showAxisLevelLabels, axisLevelColor, axisMajorEvery, axisMajorColor);
+			return XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, axisLevelOpacity, axisLevelColor, axisMajorEvery, axisMajorColor);
 		}
 
-		public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
 			if (cacheXML_PriceMarker != null)
 				for (int idx = 0; idx < cacheXML_PriceMarker.Length; idx++)
-					if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EnableNews == enableNews && cacheXML_PriceMarker[idx].NewsFeedUrl == newsFeedUrl && cacheXML_PriceMarker[idx].NewsCurrencies == newsCurrencies && cacheXML_PriceMarker[idx].NewsMinImpact == newsMinImpact && cacheXML_PriceMarker[idx].ShowNewsLines == showNewsLines && cacheXML_PriceMarker[idx].ShowNewsPanel == showNewsPanel && cacheXML_PriceMarker[idx].NewsRefreshMinutes == newsRefreshMinutes && cacheXML_PriceMarker[idx].NewsPanelMaxEvents == newsPanelMaxEvents && cacheXML_PriceMarker[idx].NewsAlertEnabled == newsAlertEnabled && cacheXML_PriceMarker[idx].NewsAlertMinutesBefore == newsAlertMinutesBefore && cacheXML_PriceMarker[idx].NewsAlertSoundFile == newsAlertSoundFile && cacheXML_PriceMarker[idx].NewsShowWithinHours == newsShowWithinHours && cacheXML_PriceMarker[idx].EnableAxisLevels == enableAxisLevels && cacheXML_PriceMarker[idx].AxisSpacingMode == axisSpacingMode && cacheXML_PriceMarker[idx].AxisSpacing == axisSpacing && cacheXML_PriceMarker[idx].ShowAxisLevelLabels == showAxisLevelLabels && cacheXML_PriceMarker[idx].AxisLevelColor == axisLevelColor && cacheXML_PriceMarker[idx].AxisMajorEvery == axisMajorEvery && cacheXML_PriceMarker[idx].AxisMajorColor == axisMajorColor && cacheXML_PriceMarker[idx].EqualsInput(input))
+					if (cacheXML_PriceMarker[idx] != null && cacheXML_PriceMarker[idx].XmlFilePath == xmlFilePath && cacheXML_PriceMarker[idx].ShowLabels == showLabels && cacheXML_PriceMarker[idx].FontSize == fontSize && cacheXML_PriceMarker[idx].EnableNews == enableNews && cacheXML_PriceMarker[idx].NewsFeedUrl == newsFeedUrl && cacheXML_PriceMarker[idx].NewsCurrencies == newsCurrencies && cacheXML_PriceMarker[idx].NewsMinImpact == newsMinImpact && cacheXML_PriceMarker[idx].ShowNewsLines == showNewsLines && cacheXML_PriceMarker[idx].ShowNewsPanel == showNewsPanel && cacheXML_PriceMarker[idx].NewsRefreshMinutes == newsRefreshMinutes && cacheXML_PriceMarker[idx].NewsPanelMaxEvents == newsPanelMaxEvents && cacheXML_PriceMarker[idx].NewsAlertEnabled == newsAlertEnabled && cacheXML_PriceMarker[idx].NewsAlertMinutesBefore == newsAlertMinutesBefore && cacheXML_PriceMarker[idx].NewsAlertSoundFile == newsAlertSoundFile && cacheXML_PriceMarker[idx].NewsShowWithinHours == newsShowWithinHours && cacheXML_PriceMarker[idx].EnableAxisLevels == enableAxisLevels && cacheXML_PriceMarker[idx].AxisSpacingMode == axisSpacingMode && cacheXML_PriceMarker[idx].AxisSpacing == axisSpacing && cacheXML_PriceMarker[idx].AxisLevelOpacity == axisLevelOpacity && cacheXML_PriceMarker[idx].AxisLevelColor == axisLevelColor && cacheXML_PriceMarker[idx].AxisMajorEvery == axisMajorEvery && cacheXML_PriceMarker[idx].AxisMajorColor == axisMajorColor && cacheXML_PriceMarker[idx].EqualsInput(input))
 						return cacheXML_PriceMarker[idx];
-			return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker(){ XmlFilePath = xmlFilePath, ShowLabels = showLabels, FontSize = fontSize, EnableNews = enableNews, NewsFeedUrl = newsFeedUrl, NewsCurrencies = newsCurrencies, NewsMinImpact = newsMinImpact, ShowNewsLines = showNewsLines, ShowNewsPanel = showNewsPanel, NewsRefreshMinutes = newsRefreshMinutes, NewsPanelMaxEvents = newsPanelMaxEvents, NewsAlertEnabled = newsAlertEnabled, NewsAlertMinutesBefore = newsAlertMinutesBefore, NewsAlertSoundFile = newsAlertSoundFile, NewsShowWithinHours = newsShowWithinHours, EnableAxisLevels = enableAxisLevels, AxisSpacingMode = axisSpacingMode, AxisSpacing = axisSpacing, ShowAxisLevelLabels = showAxisLevelLabels, AxisLevelColor = axisLevelColor, AxisMajorEvery = axisMajorEvery, AxisMajorColor = axisMajorColor }, input, ref cacheXML_PriceMarker);
+			return CacheIndicator<XML_PriceMarker>(new XML_PriceMarker(){ XmlFilePath = xmlFilePath, ShowLabels = showLabels, FontSize = fontSize, EnableNews = enableNews, NewsFeedUrl = newsFeedUrl, NewsCurrencies = newsCurrencies, NewsMinImpact = newsMinImpact, ShowNewsLines = showNewsLines, ShowNewsPanel = showNewsPanel, NewsRefreshMinutes = newsRefreshMinutes, NewsPanelMaxEvents = newsPanelMaxEvents, NewsAlertEnabled = newsAlertEnabled, NewsAlertMinutesBefore = newsAlertMinutesBefore, NewsAlertSoundFile = newsAlertSoundFile, NewsShowWithinHours = newsShowWithinHours, EnableAxisLevels = enableAxisLevels, AxisSpacingMode = axisSpacingMode, AxisSpacing = axisSpacing, AxisLevelOpacity = axisLevelOpacity, AxisLevelColor = axisLevelColor, AxisMajorEvery = axisMajorEvery, AxisMajorColor = axisMajorColor }, input, ref cacheXML_PriceMarker);
 		}
 	}
 }
@@ -1425,14 +1363,14 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
-			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, showAxisLevelLabels, axisLevelColor, axisMajorEvery, axisMajorColor);
+			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, axisLevelOpacity, axisLevelColor, axisMajorEvery, axisMajorColor);
 		}
 
-		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
-			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, showAxisLevelLabels, axisLevelColor, axisMajorEvery, axisMajorColor);
+			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, axisLevelOpacity, axisLevelColor, axisMajorEvery, axisMajorColor);
 		}
 	}
 }
@@ -1441,14 +1379,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public Indicators.XML_PriceMarker XML_PriceMarker(string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
-			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, showAxisLevelLabels, axisLevelColor, axisMajorEvery, axisMajorColor);
+			return indicator.XML_PriceMarker(Input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, axisLevelOpacity, axisLevelColor, axisMajorEvery, axisMajorColor);
 		}
 
-		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, bool showAxisLevelLabels, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
+		public Indicators.XML_PriceMarker XML_PriceMarker(ISeries<double> input, string xmlFilePath, bool showLabels, int fontSize, bool enableNews, string newsFeedUrl, string newsCurrencies, NewsImpactFilter newsMinImpact, bool showNewsLines, bool showNewsPanel, int newsRefreshMinutes, int newsPanelMaxEvents, bool newsAlertEnabled, int newsAlertMinutesBefore, string newsAlertSoundFile, int newsShowWithinHours, bool enableAxisLevels, AxisSpacingMode axisSpacingMode, double axisSpacing, int axisLevelOpacity, Brush axisLevelColor, int axisMajorEvery, Brush axisMajorColor)
 		{
-			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, showAxisLevelLabels, axisLevelColor, axisMajorEvery, axisMajorColor);
+			return indicator.XML_PriceMarker(input, xmlFilePath, showLabels, fontSize, enableNews, newsFeedUrl, newsCurrencies, newsMinImpact, showNewsLines, showNewsPanel, newsRefreshMinutes, newsPanelMaxEvents, newsAlertEnabled, newsAlertMinutesBefore, newsAlertSoundFile, newsShowWithinHours, enableAxisLevels, axisSpacingMode, axisSpacing, axisLevelOpacity, axisLevelColor, axisMajorEvery, axisMajorColor);
 		}
 	}
 }
